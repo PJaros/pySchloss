@@ -30,7 +30,6 @@ else:
     gpio_out_file = "/sys/class/gpio/gpio18/value"
 checking_proximity = False
 light_lock = Lock()
-hci_lock = Lock()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -104,60 +103,14 @@ def call(*args):
     code = p.wait()
     return out, err, code
 
-
 def test_device(mac):
     "Testen ob eine Verbindung aufgebaut werden kann und ob diese auch authentifiziert"
-    try:
-        hci_lock.acquire()
-        for cmd in hcitool_cmd:
-            out, err, code = call([hcitool_path, cmd, mac])
-            #print out, err, code, [hcitool_path, cmd, mac]
-            if code > 0 or "Not connected" in out:
-                if out or err:
-                    logger.debug("hcitool exited with: " + strip(out) + strip(err))
-                return False
-        return True
-    finally:
-        hci_lock.release()
-        # pass
-
-class Proximity(object):
-    def __init__(self, devices, thread_count=4):
-        self.devices = devices
-        self.thread_count = thread_count
-        self.status = {'alive': [], 'dead': []}
-        self.lock = threading.Lock()
-
-    def next(self):
-        try:
-            self.lock.acquire()
-            if self.devices:
-                return self.devices.pop()
-            else:
-                return None, None
-        finally:
-            self.lock.release()
-
-    def work(self):
-        while True:
-            mac, name = self.next()
-            if not mac:
-                break
-
-            if test_device(mac):
-                self.status['alive'].append((mac, name))
-            else:
-                self.status['dead'].append((mac, name))
-
-    def start(self):
-        threads = []
-
-        for i in range(self.thread_count):
-            t = threading.Thread(target=self.work)
-            t.start()
-            threads.append(t)
-
-        [t.join() for t in threads]
+    for cmd in hcitool_cmd:
+        out, err, code = call([hcitool_path, cmd, mac])
+        if code > 0:
+            logger.debug("hcitool exited with: out={0} err={1} code={2}".format(strip(out), strip(err), code))
+            return False
+    return True
 
 class ProcessFile(pyinotify.ProcessEvent):
     def process_IN_MODIFY(self, event):
@@ -182,16 +135,11 @@ def light_react():
             light_lock.release()
 
             logger.info("Light switched. Checking Bluetooth proximity")
-            bt_tester = Proximity(paired_device())
-            # bt_tester = Proximity([('F8:E0:79:49:F8:F3', 'XT1032')])
-
-            bt_tester.start()
-            logger.debug("Found: {0}".format(bt_tester.status['alive']))
-            logger.debug("Dead: {0}".format(bt_tester.status['dead']))
-
-            if bt_tester.status['alive']:
-                logger.debug("Found. Opening door")
-                switch_door_state()
+            for mac, name in paired_device():
+                logger.debug("Checking {0} {1}".format(mac, name))
+                if test_device(mac):
+                    logger.debug("Found. Switching door state")
+                    switch_door_state()
         finally:
             checking_proximity = False
 
