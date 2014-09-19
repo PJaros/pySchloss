@@ -3,6 +3,7 @@
 import pyinotify
 from threading import Thread, Lock
 from os.path import expanduser
+from string import strip
 import logging
 
 import subprocess
@@ -11,8 +12,9 @@ import os
 import sys
 import distutils.spawn
 from optparse import OptionParser
+import threading
 
-hcitool_cmd = "hcitool cc {0} && hcitool auth {0} && hcitool dc {0}"
+hcitool_cmd =["cc", "auth", "dc"]
 
 parser = OptionParser()
 parser.add_option("-t", "--test", action="store_true", default=False, help="dummy GPIO files emulieren")
@@ -28,6 +30,7 @@ else:
     gpio_out_file = "/sys/class/gpio/gpio18/value"
 checking_proximity = False
 light_lock = Lock()
+hci_lock = Lock()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -95,35 +98,68 @@ def set_door_state():
 
 set_door_state()
 
-def test_device(mac):
-    "Testen ob eine Verbindung aufgebaut werden kann und ob diese auch authentifiziert"
-    p = subprocess.Popen([hcitool_cmd.format(mac, hcitool=hcitool_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+def call(*args):
+    p = subprocess.Popen(*args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = p.communicate()
     code = p.wait()
-    if code == 0:
+    return out, err, code
+
+
+def test_device(mac):
+    "Testen ob eine Verbindung aufgebaut werden kann und ob diese auch authentifiziert"
+    try:
+        hci_lock.acquire()
+        for cmd in hcitool_cmd:
+            out, err, code = call([hcitool_path, cmd, mac])
+            #print out, err, code, [hcitool_path, cmd, mac]
+            if code > 0 or "Not connected" in out:
+                if out or err:
+                    logger.debug("hcitool exited with: " + strip(out) + strip(err))
+                return False
         return True
-    else:
-        if len(out) or len(err):
-            logger.debug("hcitool exited with: " + out + err)
-    return False
+    finally:
+        hci_lock.release()
+        # pass
 
-def proximity():
-    dev = paired_device()
-    found = False
-    logger.debug("Known Devices: {0}".format(dev))
+class Proximity(object):
+    def __init__(self, devices, thread_count=4):
+        self.devices = devices
+        self.thread_count = thread_count
+        self.status = {'alive': [], 'dead': []}
+        self.lock = threading.Lock()
 
-    for mac, name in dev:
-        logger.debug("Testing: {0}, {1}".format(mac, name))
-        if test_device(mac):
-            logger.debug("Found: {0}, {1}".format(mac, name))
-            found = True
-            break
-    if found:
-        return mac, name
-    else:
-        return None, None
+    def next(self):
+        try:
+            self.lock.acquire()
+            if self.devices:
+                return self.devices.pop()
+            else:
+                return None, None
+        finally:
+            self.lock.release()
 
-class ProcessTransientFile(pyinotify.ProcessEvent):
+    def work(self):
+        while True:
+            mac, name = self.next()
+            if not mac:
+                break
+
+            if test_device(mac):
+                self.status['alive'].append((mac, name))
+            else:
+                self.status['dead'].append((mac, name))
+
+    def start(self):
+        threads = []
+
+        for i in range(self.thread_count):
+            t = threading.Thread(target=self.work)
+            t.start()
+            threads.append(t)
+
+        [t.join() for t in threads]
+
+class ProcessFile(pyinotify.ProcessEvent):
     def process_IN_MODIFY(self, event):
         Thread(target=light_react).start()
 
@@ -131,7 +167,7 @@ def light_react():
     global checking_proximity, light_state
     light_lock.acquire()
     if checking_proximity:
-        logger.debug("Allready checking. Giving up")
+        logger.debug("Already checking. Giving up")
         light_lock.release()
         return
     else:
@@ -146,17 +182,21 @@ def light_react():
             light_lock.release()
 
             logger.info("Light switched. Checking Bluetooth proximity")
-            mac, name = proximity()
-            if mac:
+            bt_tester = Proximity(paired_device())
+            # bt_tester = Proximity([('F8:E0:79:49:F8:F3', 'XT1032')])
+
+            bt_tester.start()
+            logger.debug("Found: {0}".format(bt_tester.status['alive']))
+            logger.debug("Dead: {0}".format(bt_tester.status['dead']))
+
+            if bt_tester.status['alive']:
                 logger.debug("Found. Opening door")
                 switch_door_state()
-
-            logger.debug("Done checking")
         finally:
             checking_proximity = False
 
 wm = pyinotify.WatchManager()
-notifier = pyinotify.Notifier(wm, ProcessTransientFile())
+notifier = pyinotify.Notifier(wm, ProcessFile())
 
 wm.add_watch(gpio_in_file, pyinotify.IN_MODIFY)
 
