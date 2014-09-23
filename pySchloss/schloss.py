@@ -1,6 +1,5 @@
 #!/usr/bin/python2
 # -*- coding: utf-8 -*-
-import pyinotify
 from threading import Thread, Lock
 from os.path import expanduser
 from string import strip
@@ -13,10 +12,10 @@ import sys
 import distutils.spawn
 from optparse import OptionParser
 import threading
+import time
 
 hcitool_cmd =["cc", "auth", "dc"]
 
-#gpio_in_file = "/root/fake_in_gpio"
 gpio_in_file = "/sys/class/gpio/gpio24/value"
 gpio_out_file = "/sys/class/gpio/gpio18/value"
 
@@ -63,16 +62,15 @@ if not hcitool_path:
 
 def read_state():
     s = file(gpio_in_file).read()
-    if s:
-        return s[0]
+    if s:  # Fake GPIO can be empty. Only read a Char if we are sure it isn't
+        return s[0]  
     else:
         return "0"
 
-light_state = 0 # Updated in main()
-door_state = True  # true == Open
+light_state = 0  # Updated in main()
 
-def set_door_state():
-    global door_state
+def set_door_state(door_state):
+    "True == Open, False == Close"
     logger.info("Setting doorstate to {0}".format(door_state))
     f = file(gpio_out_file, "w")
     if door_state:
@@ -96,36 +94,15 @@ def test_device(mac):
             return False
     return True
 
-class ProcessFile(pyinotify.ProcessEvent):
-    def process_IN_MODIFY(self, event):
-        Thread(target=light_react).start()
-
 def light_react():
-    global checking_proximity, light_state
-    light_lock.acquire()
-    if checking_proximity:
-        logger.debug("Already checking")
-        light_lock.release()
-        return
-    else:
-        checking_proximity = True
-        try:
-            cur_state = read_state()
-            if cur_state == light_state:
-                logger.debug("State is the same as before")
-                light_lock.release()
-                return
-            light_state = cur_state
-            light_lock.release()
+    global checking_proximity
 
-            logger.info("Light switched. Checking Bluetooth proximity")
-            for mac, name in paired_device():
-                logger.debug("Checking {0} {1}".format(mac, name))
-                if test_device(mac):
-                    logger.debug("Found. Switching door state")
-                    switch_door_state()
-        finally:
-            checking_proximity = False
+    logger.info("light_react called. Checking Bluetooth proximity")
+    for mac, name in paired_device():
+        logger.debug("Checking {0} {1}".format(mac, name))
+        if test_device(mac):
+            logger.debug("Found. Switching door state")
+            set_door_state(True)
 
 def main():
     global gpio_in_file, gpio_out_file
@@ -145,15 +122,18 @@ def main():
         gpio_in_file = expanduser("~/fake_in_gpio")
         gpio_out_file = expanduser("~/fake_out_gpio")
 
-    light_state = read_state()
-    set_door_state()
+    set_door_state(False)
 
-    wm = pyinotify.WatchManager()
-    notifier = pyinotify.Notifier(wm, ProcessFile())
-
-    wm.add_watch(gpio_in_file, pyinotify.IN_MODIFY)
-
-    notifier.loop()
+    while True:
+        cur_state = read_state()
+        if not cur_state == light_state:
+            light_state = cur_state
+            logger.debug("Light_state changed, it is now {0}".format(cur_state))
+            if light_state == "1":
+                light_react()
+            else:
+                set_door_state(False)
+        time.sleep(0.1)
 
 if __name__ == "__main__":
     main()
