@@ -16,29 +16,15 @@ import threading
 
 hcitool_cmd =["cc", "auth", "dc"]
 
-parser = OptionParser()
-parser.add_option("-t", "--test", action="store_true", default=False, help="dummy GPIO files emulieren")
-parser.add_option("-d", "--debug", action="store_true", default=False, help="enable debug output")
-options, args = parser.parse_args()
-
 #gpio_in_file = "/root/fake_in_gpio"
-if options.test:
-    gpio_in_file = expanduser("~/fake_in_gpio")
-    gpio_out_file = expanduser("~/fake_out_gpio")
-else:
-    gpio_in_file = "/sys/class/gpio/gpio24/value"
-    gpio_out_file = "/sys/class/gpio/gpio18/value"
+gpio_in_file = "/sys/class/gpio/gpio24/value"
+gpio_out_file = "/sys/class/gpio/gpio18/value"
+
 checking_proximity = False
 light_lock = Lock()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-if (options.debug):
-    logger.setLevel(logging.DEBUG)
-else:
-    logger.setLevel(logging.INFO)
-logger.setLevel(logging.DEBUG)
-# logger.setLevel(logging.INFO)
 
 btdevice_path = distutils.spawn.find_executable("bt-device")
 bluetoothctl_path = distutils.spawn.find_executable("bluetoothctl")
@@ -52,14 +38,14 @@ def switch_door_state():
     door_state = not door_state
     set_door_state()
 
-def paired_device_btadapter():
+def paired_device_btadapter(btdevice_path=btdevice_path):
     "Listed die gepairten Geräte per 'bt-adapter -l'"
     out = subprocess.check_output([btdevice_path, "-l"])
     device = re.compile("(\S*) \((\S*)\)").findall(out)  # ABCDEF (ww:xx:yy:zz)
     switched = [(mac, name) for name, mac in device]
     return switched
 
-def paired_device_bluetoothctl():
+def paired_device_bluetoothctl(bluetoothctl_path=bluetoothctl_path):
     "Listed die gepairten Geräte per 'bluetoothctl'"
     p = subprocess.Popen([bluetoothctl_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = p.communicate("quit\n")[0]
@@ -82,7 +68,7 @@ def read_state():
     else:
         return "0"
 
-light_state = read_state()
+light_state = 0 # Updated in main()
 door_state = True  # true == Open
 
 def set_door_state():
@@ -94,8 +80,6 @@ def set_door_state():
     else:
         f.write("0")
     f.close()
-
-set_door_state()
 
 def call(*args):
     p = subprocess.Popen(*args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -120,7 +104,7 @@ def light_react():
     global checking_proximity, light_state
     light_lock.acquire()
     if checking_proximity:
-        logger.debug("Already checking. Giving up")
+        logger.debug("Already checking")
         light_lock.release()
         return
     else:
@@ -143,9 +127,33 @@ def light_react():
         finally:
             checking_proximity = False
 
-wm = pyinotify.WatchManager()
-notifier = pyinotify.Notifier(wm, ProcessFile())
+def main():
+    global gpio_in_file, gpio_out_file
+    global light_state, door_state
 
-wm.add_watch(gpio_in_file, pyinotify.IN_MODIFY)
+    parser = OptionParser()
+    parser.add_option("-t", "--test", action="store_true", default=False, help="dummy GPIO files emulieren")
+    parser.add_option("-d", "--debug", action="store_true", default=False, help="enable debug output")
+    options, args = parser.parse_args()
 
-notifier.loop()
+    if (options.debug):
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
+
+    if options.test:
+        gpio_in_file = expanduser("~/fake_in_gpio")
+        gpio_out_file = expanduser("~/fake_out_gpio")
+
+    light_state = read_state()
+    set_door_state()
+
+    wm = pyinotify.WatchManager()
+    notifier = pyinotify.Notifier(wm, ProcessFile())
+
+    wm.add_watch(gpio_in_file, pyinotify.IN_MODIFY)
+
+    notifier.loop()
+
+if __name__ == "__main__":
+    main()
