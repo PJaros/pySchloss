@@ -29,6 +29,8 @@ btdevice_path = distutils.spawn.find_executable("bt-device")
 bluetoothctl_path = distutils.spawn.find_executable("bluetoothctl")
 hcitool_path = distutils.spawn.find_executable("hcitool")
 
+light_state = 0  # Updated in main()
+
 if not os.geteuid() == 0:
     sys.exit("This program needs root rights to work")
 
@@ -51,6 +53,9 @@ def paired_device_bluetoothctl(bluetoothctl_path=bluetoothctl_path):
     device = re.compile("Device (\S*) (\S*)").findall(out)  # Device ww:xx:yy:zz ABCDEF
     return device
 
+def fake_paired_device():
+    return [("00:00:00:00:00:00", "Fake1"), ("00:00:00:00:00:02", "Fake2"), ("00:00:00:00:00:03", "Fake3")]
+
 if bluetoothctl_path:
     paired_device = paired_device_bluetoothctl
 elif btdevice_path:
@@ -66,8 +71,6 @@ def read_state():
         return s[0]  
     else:
         return "0"
-
-light_state = 0  # Updated in main()
 
 def set_door_state(door_state):
     "True == Open, False == Close"
@@ -94,23 +97,41 @@ def test_device(mac):
             return False
     return True
 
-def light_react():
-    global checking_proximity
+def light_react(search_till_found=False):
+    global checking_proximity, light_state
 
-    logger.info("light_react called. Checking Bluetooth proximity")
-    for mac, name in paired_device():
-        logger.debug("Checking {0} {1}".format(mac, name))
-        if test_device(mac):
-            logger.debug("Found. Switching door state")
-            set_door_state(True)
+    light_lock.acquire()
+    if checking_proximity:
+        logger.info("light_react() already running. Canceling this Call")
+        light_lock.release()
+        return
+    logger.info("light_react() called. Checking Bluetooth proximity")
+    try:
+        checking_proximity = True
+        light_lock.release()
+        while(light_state):
+            for mac, name in paired_device():
+                logger.debug("Checking {0} {1}".format(mac, name))
+                if test_device(mac):
+                    logger.debug("Found. Switching door state")
+                    set_door_state(True)
+                    return
+            if not search_till_found:
+                return
+        if not light_state and search_till_found:
+            logger.debug("light_state switched off. Stopping Scan.")
+    finally:
+        checking_proximity = False
 
 def main():
     global gpio_in_file, gpio_out_file
     global light_state, door_state
+    global paired_device
 
     parser = OptionParser()
     parser.add_option("-t", "--test", action="store_true", default=False, help="dummy GPIO files emulieren")
     parser.add_option("-d", "--debug", action="store_true", default=False, help="enable debug output")
+    parser.add_option("-m", action="store_true", default=False, help="fake mac adresses")
     options, args = parser.parse_args()
 
     if (options.debug):
@@ -122,18 +143,25 @@ def main():
         gpio_in_file = expanduser("~/fake_in_gpio")
         gpio_out_file = expanduser("~/fake_out_gpio")
 
+    if options.m:
+        paired_device = fake_paired_device
+
     set_door_state(False)
 
-    while True:
-        cur_state = read_state()
-        if not cur_state == light_state:
-            light_state = cur_state
-            logger.debug("Light_state changed, it is now {0}".format(cur_state))
-            if light_state == "1":
-                light_react()
-            else:
-                set_door_state(False)
-        time.sleep(0.1)
+    try:
+        while True:
+            cur_state = read_state()
+            if not cur_state == light_state:
+                light_state = cur_state
+                logger.debug("Light_state changed, it is now {0}".format(cur_state))
+                if light_state == "1":
+                    threading.Thread(target=light_react, args=[True]).start()
+                else:
+                    set_door_state(False)
+            time.sleep(0.1)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Caught a exit signal. Exiting")
+        light_state = False  # exiting possible running light_react while loop
 
 if __name__ == "__main__":
     main()
