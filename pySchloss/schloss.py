@@ -12,8 +12,9 @@ import os
 import sys
 import distutils.spawn
 from optparse import OptionParser
-import threading
 import time
+
+import schloss_config
 
 hcitool_cmd =["cc", "auth", "dc"]
 
@@ -23,7 +24,7 @@ gpio_out_file = "/sys/class/gpio/gpio18/value"
 checking_proximity = False
 light_lock = Lock()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
 btdevice_path = distutils.spawn.find_executable("bt-device")
@@ -31,14 +32,6 @@ bluetoothctl_path = distutils.spawn.find_executable("bluetoothctl")
 hcitool_path = distutils.spawn.find_executable("hcitool")
 
 light_state = 0  # Updated in main()
-
-if not os.geteuid() == 0:
-    sys.exit("This program needs root rights to work")
-
-def switch_door_state():
-    global door_state
-    door_state = not door_state
-    set_door_state()
 
 def paired_device_btadapter(btdevice_path=btdevice_path):
     "Listed die gepairten Geräte per 'bt-adapter -l'"
@@ -56,15 +49,6 @@ def paired_device_bluetoothctl(bluetoothctl_path=bluetoothctl_path):
 
 def fake_paired_device():
     return [("00:00:00:00:00:00", "Fake1"), ("00:00:00:00:00:02", "Fake2"), ("00:00:00:00:00:03", "Fake3")]
-
-if bluetoothctl_path:
-    paired_device = paired_device_bluetoothctl
-elif btdevice_path:
-    paired_device = paired_device_btadapter
-else:
-    sys.exit("Either bluetoothctl or bt-adapter needs to be installed")
-if not hcitool_path:
-    sys.exit("hcitool not found")
 
 def read_state():
     s = file(gpio_in_file).read()
@@ -132,7 +116,7 @@ def main():
     parser = OptionParser()
     parser.add_option("-t", "--test", action="store_true", default=False, help="dummy GPIO files emulieren")
     parser.add_option("-d", "--debug", action="store_true", default=False, help="enable debug output")
-    parser.add_option("-m", action="store_true", default=False, help="fake mac adresses")
+    parser.add_option("-m", action="store_true", default=False, help="mockup mac adresses")
     options, args = parser.parse_args()
 
     if (options.debug):
@@ -146,23 +130,51 @@ def main():
 
     if options.m:
         paired_device = fake_paired_device
+    else:
+        if bluetoothctl_path:
+            paired_device = paired_device_bluetoothctl
+        elif btdevice_path:
+            paired_device = paired_device_btadapter
+        else:
+            sys.exit("Either bluetoothctl or bt-adapter needs to be installed")
+        if not hcitool_path:
+            sys.exit("hcitool not found")
 
     set_door_state(False)
 
-    try:
-        while True:
-            cur_state = read_state()
-            if not cur_state == light_state:
-                light_state = cur_state
-                logger.debug("Light_state changed, it is now {0}".format(cur_state))
-                if light_state == "1":
-                    threading.Thread(target=light_react, args=[True]).start()
-                else:
-                    set_door_state(False)
-            time.sleep(0.1)
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Caught a exit signal. Exiting")
-        light_state = False  # exiting possible running light_react while loop
+    config = schloss_config.load_config()
+    alias = config["alias"]
+
+    if len(args) == 0:
+        sys.exit("Please add a command")
+    if "show" in args:
+        for mac, dev in paired_device():
+            if mac in alias.keys():
+                print("{0} {1} {2}".format(mac, dev, alias[mac]))
+            else:
+                print("{0} {1} *no alias".format(mac, dev))
+
+    if "add" in args:
+        alias[args[1]] = args[2]
+        config["alias"] = alias
+        schloss_config.save_config(config)
+    if "service" in args:
+        if not os.geteuid() == 0:
+            sys.exit("This program needs root rights do run as service")
+        try:
+            while True:
+                cur_state = read_state()
+                if not cur_state == light_state:
+                    light_state = cur_state
+                    logger.debug("Light_state changed, it is now {0}".format(cur_state))
+                    if light_state == "1":
+                        Thread(target=light_react, args=[True]).start()
+                    else:
+                        set_door_state(False)
+                time.sleep(0.1)
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Caught a exit signal. Exiting")
+            light_state = False  # exiting possible running light_react while loop
 
 if __name__ == "__main__":
     main()

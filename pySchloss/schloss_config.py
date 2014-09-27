@@ -2,11 +2,27 @@
 # -*- coding: utf-8 -*-
 
 __schloss_data_directory__ = '../data/'
+schloss_pickle_file = 'pySchloss.pkl'
 
 import os
+import os.path
+import pickle
 
 class ProjectPathNotFound(Exception):
     """Raised when we can't find the project directory."""
+
+def load_config():
+    data_file = get_data_file(schloss_pickle_file)
+    if not os.path.isfile(data_file):
+        return {"alias":{}}
+    else:
+        with open(data_file,'rb') as f:
+            return pickle.load(f)
+
+def save_config(config):
+    with open(get_data_file(schloss_pickle_file),'wb') as f:
+        pickle.dump(config, f)
+        f.close()
 
 def get_data_file(*path_segments):
     """Get the full path to a data file.
@@ -19,10 +35,10 @@ def get_data_file(*path_segments):
 
 
 def get_data_path():
-    """Retrieve hat-wrap data path
+    """Retrieve pySchloss data path
 
     This path is by default <hat_wrap_lib_path>/../data/ in trunk
-    and /usr/share/hat-wrap in an installed version but this path
+    and /usr/share/pySchloss in an installed version but this path
     is specified at installation time.
     """
 
