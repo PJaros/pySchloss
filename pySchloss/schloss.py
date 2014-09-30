@@ -13,8 +13,11 @@ import sys
 import distutils.spawn
 from optparse import OptionParser
 import time
+#import pySchloss.schloss_config as schloss_config
 
 import schloss_config
+import ConfigParser
+
 
 hcitool_cmd =["cc", "auth", "dc"]
 
@@ -140,25 +143,24 @@ def main():
         if not hcitool_path:
             sys.exit("hcitool not found")
 
-    set_door_state(False)
-
-    config = schloss_config.load_config()
-    alias = config["alias"]
+    ini = schloss_config.load_ini()
 
     if len(args) == 0:
         sys.exit("Please add a command")
     if "show" in args:
         for mac, dev in paired_device():
-            if mac in alias.keys():
-                print("{0} {1} {2}".format(mac, dev, alias[mac]))
+            if mac in ini.keys():
+                print("{0} {1} {2}".format(mac, dev, ini[mac]))
             else:
                 print("{0} {1} *no alias".format(mac, dev))
-
-    if "add" in args:
-        alias[args[1]] = args[2]
-        config["alias"] = alias
-        schloss_config.save_config(config)
+    if "add_alias" in args:
+        ini = schloss_config.load_ini()
+        for mac, dev in paired_device():
+            if not mac in ini:
+                ini[mac] = 'kein Name'
+        schloss_config.save_ini(ini)
     if "service" in args:
+        set_door_state(False)
         if not os.geteuid() == 0:
             sys.exit("This program needs root rights do run as service")
         try:

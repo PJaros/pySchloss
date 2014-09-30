@@ -1,12 +1,18 @@
 #!/usr/bin/python2
 # -*- coding: utf-8 -*-
+from itertools import combinations
 
 __schloss_data_directory__ = '../data/'
 schloss_pickle_file = 'pySchloss.pkl'
+schloss_ini_file = 'config.ini'
+
+ini_section_alias = 'Alias'
 
 import os
 import os.path
 import pickle
+import ConfigParser
+import re
 
 class ProjectPathNotFound(Exception):
     """Raised when we can't find the project directory."""
@@ -23,6 +29,29 @@ def save_config(config):
     with open(get_data_file(schloss_pickle_file),'wb') as f:
         pickle.dump(config, f)
         f.close()
+
+def load_ini():
+    comment = re.compile('^#')
+    entry = re.compile('(.*)=(.*)$')
+    ini_file = get_data_file(schloss_ini_file)
+    ini = {}
+    if os.path.isfile(ini_file):
+        with file(ini_file, 'r') as f:
+            ini = {}
+            for line in f:
+                if not comment.findall(line):
+                    e = entry.findall(line)
+                    if e:
+                        kv = e[0]
+                        ini[kv[0].strip()] = kv[1].strip()
+    return ini
+
+def save_ini(ini):
+    keys = ini.keys()
+    keys.sort()
+    with open(get_data_file(schloss_ini_file), 'w') as configfile:
+        for k in keys:
+            configfile.write("{0} = {1}{2}".format(k, ini[k], os.linesep))
 
 def get_data_file(*path_segments):
     """Get the full path to a data file.
