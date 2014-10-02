@@ -55,7 +55,7 @@ def fake_paired_device():
 
 def read_state():
     s = file(gpio_in_file).read()
-    if s:  # Fake GPIO can be empty. Only read a Char if we are sure it isn't
+    if s:  # Fake GPIO could be empty. Only read a char if we are sure it isn't empty.
         return s[0]  
     else:
         return "0"
@@ -162,7 +162,7 @@ def main():
     if "service" in args:
         set_door_state(False)
         if not os.geteuid() == 0:
-            sys.exit("This program needs root rights do run as service")
+            sys.exit("This program needs root rights to run as service")
         try:
             while True:
                 cur_state = read_state()

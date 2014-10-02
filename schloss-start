@@ -1,0 +1,17 @@
+#!/bin/bash
+# modprobe btusb
+# systemctl start bluetooth
+
+/root/gpio/setup-gpio.sh 
+bluetoothctl -a << END
+power on
+quit
+END
+
+/root/schloss.py -d
+
+# Auskommentierte Befehle
+# discoverable on
+# pairable on
+# agent on
+# default-agent

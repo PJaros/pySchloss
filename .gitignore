@@ -2,6 +2,7 @@
 gpio/
 old1/
 old2/
+current-data/
 
 /.idea/.name
 /.idea/encodings.xml
