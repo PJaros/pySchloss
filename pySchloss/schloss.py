@@ -16,8 +16,10 @@ import time
 
 hcitool_cmd =["cc", "auth", "dc"]
 
-gpio_in_file = "/sys/class/gpio/gpio24/value"
-gpio_out_file = "/sys/class/gpio/gpio18/value"
+gpio_in_file = "/sys/class/gpio/gpio24/value"  # Light-Switch state
+gpio_out_file = "/sys/class/gpio/gpio18/value"  # Door-Switch
+
+gpio_status_file = "/sys/class/gpio/gpio23/value"  # Status-LED
 
 checking_proximity = False
 light_lock = Lock()
@@ -29,7 +31,10 @@ btdevice_path = distutils.spawn.find_executable("bt-device")
 bluetoothctl_path = distutils.spawn.find_executable("bluetoothctl")
 hcitool_path = distutils.spawn.find_executable("hcitool")
 
-light_state = 0  # Updated in main()
+light_state = False  # Updated in main()
+
+blink_on = False  # Blink state
+set_blink = None
 
 if not os.geteuid() == 0:
     sys.exit("This program needs root rights to work")
@@ -67,10 +72,12 @@ if not hcitool_path:
 
 def read_state():
     s = file(gpio_in_file).read()
-    if s:  # Fake GPIO can be empty. Only read a Char if we are sure it isn't
-        return s[0]  
+    if not s:  # Fake GPIO can be empty. Only read a Char if we are sure it isn't
+        return False
+    elif s[0] is "0":
+        return False
     else:
-        return "0"
+        return True
 
 def set_door_state(door_state):
     "True == Open, False == Close"
@@ -97,6 +104,27 @@ def test_device(mac):
             return False
     return True
 
+def set_fake_blink(light):
+    global blink_on
+    blink_on = light
+    logger.info("Setting blink LED to {0}".format(blink_on))
+
+def set_real_blink(light):
+    global blink_on
+    blink_on = light
+    with file(gpio_status_file, "w") as f:
+        if light:
+            f.write("1")
+        else:
+            f.write("0")
+
+set_blink = set_real_blink
+
+def switch_blink():
+    global blink_on
+    blink_on = not blink_on
+    set_blink(blink_on)
+
 def light_react(search_till_found=False):
     global checking_proximity, light_state
 
@@ -109,24 +137,29 @@ def light_react(search_till_found=False):
     try:
         checking_proximity = True
         light_lock.release()
-        while(light_state):
+        while light_state:
             for mac, name in paired_device():
+                switch_blink()
                 logger.debug("Checking {0} {1}".format(mac, name))
                 if test_device(mac):
                     logger.debug("Found. Switching door state")
                     set_door_state(True)
                     return
+                if not light_state:
+                    break
             if not search_till_found:
                 return
         if not light_state and search_till_found:
             logger.debug("light_state switched off. Stopping Scan.")
     finally:
         checking_proximity = False
+        set_blink(False)
 
 def main():
     global gpio_in_file, gpio_out_file
     global light_state, door_state
     global paired_device
+    global set_blink
 
     parser = OptionParser()
     parser.add_option("-t", "--test", action="store_true", default=False, help="dummy GPIO files emulieren")
@@ -142,11 +175,13 @@ def main():
     if options.test:
         gpio_in_file = expanduser("~/fake_in_gpio")
         gpio_out_file = expanduser("~/fake_out_gpio")
+        set_blink = set_fake_blink
 
     if options.m:
         paired_device = fake_paired_device
 
     set_door_state(False)
+    set_blink(False)
 
     try:
         while True:
@@ -154,7 +189,7 @@ def main():
             if not cur_state == light_state:
                 light_state = cur_state
                 logger.debug("Light_state changed, it is now {0}".format(cur_state))
-                if light_state == "1":
+                if light_state:
                     threading.Thread(target=light_react, args=[True]).start()
                 else:
                     set_door_state(False)
