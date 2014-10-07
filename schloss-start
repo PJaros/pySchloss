@@ -8,7 +8,7 @@ power on
 quit
 END
 
-/root/schloss.py -d
+/root/schloss.py -d 2>&1 | tee -a /root/schloss.log 
 
 # Auskommentierte Befehle
 # discoverable on
