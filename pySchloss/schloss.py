@@ -24,7 +24,7 @@ gpio_status_file = "/sys/class/gpio/gpio23/value"  # Status-LED
 checking_proximity = False
 light_lock = Lock()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
 btdevice_path = distutils.spawn.find_executable("bt-device")
