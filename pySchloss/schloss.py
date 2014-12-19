@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 from threading import Thread, Lock
 from os.path import expanduser
-from string import strip
 import logging
 
 import subprocess
@@ -71,7 +70,7 @@ if not hcitool_path:
     sys.exit("hcitool not found")
 
 def read_state():
-    s = file(gpio_in_file).read()
+    s = open(gpio_in_file).read()
     if not s:  # Fake GPIO can be empty. Only read a Char if we are sure it isn't
         return False
     elif s[0] is "0":
@@ -82,7 +81,7 @@ def read_state():
 def set_door_state(door_state):
     "True == Open, False == Close"
     logger.info("Setting doorstate to {0}".format(door_state))
-    f = file(gpio_out_file, "w")
+    f = open(gpio_out_file, "w")
     if door_state:
         f.write("1")
     else:
@@ -100,7 +99,7 @@ def test_device(mac):
     for cmd in hcitool_cmd:
         out, err, code = call([hcitool_path, cmd, mac])
         if code > 0:
-            logger.debug("hcitool exited with: out={0} err={1} code={2}".format(strip(out), strip(err), code))
+            logger.debug("hcitool exited with: out={0} err={1} code={2}".format(out.strip(), err.strip(), code))
             return False
     return True
 
@@ -112,7 +111,7 @@ def set_fake_blink(light):
 def set_real_blink(light):
     global blink_on
     blink_on = light
-    with file(gpio_status_file, "w") as f:
+    with open(gpio_status_file, "w") as f:
         if light:
             f.write("1")
         else:
