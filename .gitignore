@@ -2,6 +2,7 @@
 old1/
 old2/
 current-data/
+dist/
 
 /.idea/.name
 /.idea/encodings.xml

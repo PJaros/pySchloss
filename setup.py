@@ -2,7 +2,7 @@ from distutils.core import setup
 
 setup(
     name='pySchloss',
-    version='1.0',
+    version='0.2',
     packages=['pySchloss'],
     url='https://github.com/PJaros/pySchloss',
     license='Apache License, Version 2.0',
