@@ -1,8 +1,8 @@
 #!/usr/bin/python2
 # -*- coding: utf-8 -*-
-
 from threading import Thread, Lock
-from os.path import expanduser
+from os.path import expanduser, isfile
+from string import strip
 import logging
 
 import subprocess
@@ -11,22 +11,28 @@ import os
 import sys
 import distutils.spawn
 from optparse import OptionParser
+import threading
 import time
-#import pySchloss.schloss_config as schloss_config
-
-import schloss_config
-import ConfigParser
-
+import urllib2
+import collections
 
 hcitool_cmd =["cc", "auth", "dc"]
+reboot_cmd = ["/usr/sbin/reboot"]
 
 gpio_in_file = "/sys/class/gpio/gpio24/value"  # Light-Switch state
 gpio_out_file = "/sys/class/gpio/gpio18/value"  # Door-Switch
 
 gpio_status_file = "/sys/class/gpio/gpio23/value"  # Status-LED
 
+priorize_list_path = "prio_list.txt"
+
 checking_proximity = False
 light_lock = Lock()
+
+# url_on = "http://deepthoughtplex.ruum42:8080/on"
+# url_off = "http://deepthoughtplex.ruum42:8080/off"
+url_on = None
+url_off = None
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -39,13 +45,15 @@ light_state = False  # Updated in main()
 
 blink_on = False  # Blink state
 set_blink = None
+err_count = 0
 
-def paired_device_btadapter(btdevice_path=btdevice_path):
-    "Listed die gepairten Geräte per 'bt-adapter -l'"
-    out = subprocess.check_output([btdevice_path, "-l"])
-    device = re.compile("(\S*) \((\S*)\)").findall(out)  # ABCDEF (ww:xx:yy:zz)
-    switched = [(mac, name) for name, mac in device]
-    return switched
+if not os.geteuid() == 0:
+    sys.exit("This program needs root rights to work")
+
+def switch_door_state():
+    global door_state
+    door_state = not door_state
+    set_door_state()
 
 def paired_device_bluetoothctl(bluetoothctl_path=bluetoothctl_path):
     "Listed die gepairten Geräte per 'bluetoothctl'"
@@ -57,8 +65,62 @@ def paired_device_bluetoothctl(bluetoothctl_path=bluetoothctl_path):
 def fake_paired_device():
     return [("00:00:00:00:00:00", "Fake1"), ("00:00:00:00:00:02", "Fake2"), ("00:00:00:00:00:03", "Fake3")]
 
+def load_list(path):
+    l = []
+    if isfile(path):
+        with open(path, 'r') as f:
+            for line in f.read().splitlines():
+                l.append(line)
+    return l
+
+def write_list(l, path):
+    # logger.info("Writing prio_list.txt with content " + repr(l))
+    with open(path, 'w') as f:
+        for item in l:
+            f.write(item + "\n")
+
+def add_priorize(mac):
+    l = load_list(priorize_list_path)
+    paired_device_bt = {m for m, text in paired_device_bluetoothctl()}
+
+    # Neue Mac-Adresse vorne einfügen und hinten löschen (falls vorhanden)
+    if mac in l:
+        l.remove(mac)
+    l.insert(0, mac)
+
+    # logger.info("prio_list.txt before mac removal: " + repr(l))
+    # Prio-Liste von nicht gepairten Mac-Adressen bereinigen
+    for mac in l:
+        if mac not in paired_device_bt:
+            l.remove(mac)
+
+    write_list(l, priorize_list_path)
+
+def priorize(all_devices):
+    prio_list = load_list(priorize_list_path)
+    h_all_device = collections.OrderedDict()
+    for mac, name in all_devices:
+        h_all_device[mac] = name
+    prio_mac_name = []
+    for mac in prio_list:
+        if mac in h_all_device:
+            name = h_all_device[mac]
+            prio_mac_name.append((mac, name))
+            del h_all_device[mac]
+
+    for mac, name in h_all_device.items():
+        prio_mac_name.append((mac, name))
+    return prio_mac_name
+
+def priorized_device():
+    pd = paired_device_bluetoothctl()
+    logger.info("pd-before: " + repr(pd))
+    priorized_list = priorize(pd)
+    logger.info("pd-after: " + repr(priorized_list))
+    return priorized_list
+
 def read_state():
-    s = open(gpio_in_file).read()
+    s = file(gpio_in_file).read()
     if not s:  # Fake GPIO can be empty. Only read a Char if we are sure it isn't
         return False
     elif s[0] is "0":
@@ -69,11 +131,25 @@ def read_state():
 def set_door_state(door_state):
     "True == Open, False == Close"
     logger.info("Setting doorstate to {0}".format(door_state))
-    f = open(gpio_out_file, "w")
+    f = file(gpio_out_file, "w")
     if door_state:
         f.write("1")
+        if url_off:
+            try:
+                response = urllib2.urlopen(url_off).read()
+                logger.info("Reported to Website, resulting. Answer: " + repr(response))
+            except:
+                logger.error("Error while accessing: {}. Error: {}".format(
+                    repr(url_off), sys.exc_info()[0]))
     else:
         f.write("0")
+        if url_on:
+            try:
+                response = urllib2.urlopen(url_on).read()
+                logger.info("Reported to Website, resulting. Answer: " + repr(response))
+            except:
+                logger.error("Error while accessing: {}. Error: {}".format(
+                    repr(url_on), sys.exc_info()[0]))
     f.close()
 
 def call(*args):
@@ -84,10 +160,15 @@ def call(*args):
 
 def test_device(mac):
     "Testen ob eine Verbindung aufgebaut werden kann und ob diese auch authentifiziert"
+    global err_count
     for cmd in hcitool_cmd:
         out, err, code = call([hcitool_path, cmd, mac])
         if code > 0:
-            logger.debug("hcitool exited with: out={0} err={1} code={2}".format(out.strip(), err.strip(), code))
+            logger.debug("hcitool exited with: out={0} err={1} code={2} err_count={3}".format(strip(out), strip(err), code, err_count))
+            if err == "Device is not available.":
+                err_count += 1
+            if err_count > 50:
+            	call(reboot_cmd)
             return False
     return True
 
@@ -99,7 +180,7 @@ def set_fake_blink(light):
 def set_real_blink(light):
     global blink_on
     blink_on = light
-    with open(gpio_status_file, "w") as f:
+    with file(gpio_status_file, "w") as f:
         if light:
             f.write("1")
         else:
@@ -125,12 +206,13 @@ def light_react(search_till_found=False):
         checking_proximity = True
         light_lock.release()
         while light_state:
-            for mac, name in paired_device():
+            for mac, name in priorized_device():
                 switch_blink()
                 logger.debug("Checking {0} {1}".format(mac, name))
                 if test_device(mac):
                     logger.debug("Found. Switching door state")
                     set_door_state(True)
+                    add_priorize(mac)
                     return
                 if not light_state:
                     break
@@ -151,7 +233,7 @@ def main():
     parser = OptionParser()
     parser.add_option("-t", "--test", action="store_true", default=False, help="dummy GPIO files emulieren")
     parser.add_option("-d", "--debug", action="store_true", default=False, help="enable debug output")
-    parser.add_option("-m", action="store_true", default=False, help="mockup mac adresses")
+    parser.add_option("-m", action="store_true", default=False, help="fake mac adresses")
     options, args = parser.parse_args()
 
     if (options.debug):
@@ -166,50 +248,24 @@ def main():
 
     if options.m:
         paired_device = fake_paired_device
-    else:
-        if bluetoothctl_path:
-            paired_device = paired_device_bluetoothctl
-        elif btdevice_path:
-            paired_device = paired_device_btadapter
-        else:
-            sys.exit("Either bluetoothctl or bt-adapter needs to be installed")
-        if not hcitool_path:
-            sys.exit("hcitool not found")
 
-    ini = schloss_config.load_ini()
+    set_door_state(False)
+    set_blink(False)
 
-    if len(args) == 0:
-        sys.exit("Please add a command")
-    if "show" in args:
-        for mac, dev in paired_device():
-            if mac in ini.keys():
-                print("{0} {1} {2}".format(mac, dev, ini[mac]))
-            else:
-                print("{0} {1} *no alias".format(mac, dev))
-    if "add_alias" in args:
-        ini = schloss_config.load_ini()
-        for mac, dev in paired_device():
-            if not mac in ini:
-                ini[mac] = 'kein Name'
-        schloss_config.save_ini(ini)
-    if "service" in args:
-        set_door_state(False)
-        set_blink(False)
-
-        try:
-            while True:
-                cur_state = read_state()
-                if not cur_state == light_state:
-                    light_state = cur_state
-                    logger.debug("Light_state changed, it is now {0}".format(cur_state))
-                    if light_state:
-                        Thread(target=light_react, args=[True]).start()
-                    else:
-                        set_door_state(False)
-                time.sleep(0.1)
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("Caught a exit signal. Exiting")
-            light_state = False  # exiting possible running light_react while loop
+    try:
+        while True:
+            cur_state = read_state()
+            if not cur_state == light_state:
+                light_state = cur_state
+                logger.debug("Light_state changed, it is now {0}".format(cur_state))
+                if light_state:
+                    threading.Thread(target=light_react, args=[True]).start()
+                else:
+                    set_door_state(False)
+            time.sleep(0.1)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Caught a exit signal. Exiting")
+        light_state = False  # exiting possible running light_react while loop
 
 if __name__ == "__main__":
     main()
