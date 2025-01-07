@@ -46,6 +46,7 @@ light_state = False  # Updated in main()
 blink_on = False  # Blink state
 set_blink = None
 err_count = 0
+time_last_error = None
 
 if not os.geteuid() == 0:
     sys.exit("This program needs root rights to work")
@@ -161,11 +162,19 @@ def call(*args):
 def test_device(mac):
     "Testen ob eine Verbindung aufgebaut werden kann und ob diese auch authentifiziert"
     global err_count
+    global time_last_error
     for cmd in hcitool_cmd:
         out, err, code = call([hcitool_path, cmd, mac])
         if code > 0:
+            cur_time = time.time()
+            short_time_passed = False
+            if time_last_error == None:
+                time_last_error = cur_time
+            elif (cur_time - time_last_error) < 1:
+                short_time_passed = True
+                time_last_error = cur_time
             logger.debug("hcitool exited with: out={0} err={1} code={2} err_count={3}".format(strip(out), strip(err), code, err_count))
-            if strip(err) in ("Device is not available.", "Not connected."):
+            if strip(err) in ("Device is not available.", "Not connected.") and short_time_passed:
                 err_count += 1
             if err_count > 50:
             	call(reboot_cmd)
