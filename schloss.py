@@ -165,7 +165,7 @@ def test_device(mac):
         out, err, code = call([hcitool_path, cmd, mac])
         if code > 0:
             logger.debug("hcitool exited with: out={0} err={1} code={2} err_count={3}".format(strip(out), strip(err), code, err_count))
-            if err == "Device is not available.":
+            if strip(err) in ("Device is not available.", "Not connected."):
                 err_count += 1
             if err_count > 50:
             	call(reboot_cmd)
