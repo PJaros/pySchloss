@@ -177,7 +177,7 @@ def test_device(mac):
             if strip(err) in ("Device is not available.", "Not connected.") and short_time_passed:
                 err_count += 1
             if err_count > 50:
-            	call(reboot_cmd)
+                call(reboot_cmd)
             return False
     return True
 
